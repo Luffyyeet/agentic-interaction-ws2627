@@ -1,0 +1,15 @@
+# Secrets: holds the API key, must never be committed
+.env
+
+# Run logs written by the agent
+logs/
+
+# Virtual environment
+.venv/
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+
+# Editor settings
+.vscode/
