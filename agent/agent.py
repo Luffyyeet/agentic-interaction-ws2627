@@ -12,6 +12,7 @@ SYSTEM_PROMPT = (
     "always look them up with the get_calendar_day tool, never guess. "
     "Call the tool once for every day the question needs. "
     "If a lookup fails, say for which day the answer is missing and why. "
+    "If there is no data for a day, say that no data is available, not that the day is free. "
     "When you have everything, answer without calling a tool. "
     "Answer briefly, in the language of the user's question."
 )

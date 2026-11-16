@@ -17,9 +17,11 @@ def get_calendar_day(data_base_url: str, date: str) -> dict:
     except httpx.HTTPError as error:
         return {"ok": False, "error": f"Calendar service not reachable: {error}"}
 
-    # 404 is not a failure: it means there is no calendar data for that day
+    # 404 is not a failure: it means there is no calendar data for that day.
+    # No empty "events" list here, since the model would read that as "the day is free".
     if response.status_code == 404:
-        return {"ok": True, "date": date, "events": [], "note": "No calendar data for this date."}
+        return {"ok": True, "date": date, "data_available": False,
+                "note": "No calendar data exists for this date. This does NOT mean the day is free."}
     if response.status_code != 200:
         return {"ok": False, "error": f"Calendar service answered with HTTP {response.status_code}."}
 
