@@ -23,8 +23,12 @@ def get_calendar_day(data_base_url: str, date: str) -> dict:
     if response.status_code != 200:
         return {"ok": False, "error": f"Calendar service answered with HTTP {response.status_code}."}
 
-    day = response.json()
-    return {"ok": True, "date": day["date"], "events": day["events"]}
+    # The service is outside our control: a broken answer becomes a result, not a crash
+    try:
+        day = response.json()
+        return {"ok": True, "date": day["date"], "events": day["events"]}
+    except (ValueError, KeyError, TypeError):
+        return {"ok": False, "error": "Calendar service sent data in an unexpected format."}
 
 
 # Description of the tool in the format the Chat Completions API expects.
