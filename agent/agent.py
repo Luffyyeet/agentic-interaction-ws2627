@@ -18,11 +18,24 @@ def elapsed_ms(start: float) -> int:
     return round((time.perf_counter() - start) * 1000)
 
 
+def calendar(args: dict, config: Config) -> dict:
+    return get_calendar_day(config.data_base_url, args.get("date", ""))
+
+
+# All tools the agent offers: name -> (description for the model, function that runs it).
+# A new tool needs only one more entry here.
+TOOLS = {
+    "get_calendar_day": (CALENDAR_TOOL, calendar),
+}
+TOOL_DESCRIPTIONS = [description for description, _ in TOOLS.values()]
+
+
 def run_tool(name: str, args: dict, config: Config) -> dict:
     """Execute the tool the model asked for. Bad requests come back as a result, not a crash."""
-    if name == "get_calendar_day":
-        return get_calendar_day(config.data_base_url, args.get("date", ""))
-    return {"ok": False, "error": f"Unknown tool '{name}'."}
+    if name not in TOOLS:
+        return {"ok": False, "error": f"Unknown tool '{name}'."}
+    _, function = TOOLS[name]
+    return function(args, config)
 
 
 def answer(question: str, config: Config, log: RunLog) -> str:
@@ -34,49 +47,44 @@ def answer(question: str, config: Config, log: RunLog) -> str:
     ]
     log.write("user_task", task=question)
 
-    # 1st model call: the model sees the question and the tool description
-    start = time.perf_counter()
-    response = client.chat.completions.create(
-        model=config.model,
-        messages=messages,
-        tools=[CALENDAR_TOOL],
-    )
-    first_call_ms = elapsed_ms(start)
-    reply = response.choices[0].message
-
-    if not reply.tool_calls:
-        # The model answered directly without using the tool
-        text = reply.content or ""
-        log.write("final", duration_ms=first_call_ms, answer=text)
-        return text
-
-    # Keep the model's tool request in the conversation, then add one result per call
-    messages.append(reply)
-    for call in reply.tool_calls:
-        name = call.function.name
-        try:
-            args = json.loads(call.function.arguments)
-        except json.JSONDecodeError:
-            args = {}
-        log.write("tool_call", tool=name, args=args, duration_ms=first_call_ms)
-
+    # Every step is one model call. The model always gets the tools and decides itself
+    # whether it needs another one or is done.
+    for step in range(1, config.max_steps + 1):
         start = time.perf_counter()
-        result = run_tool(name, args, config)
-        log.write("tool_result", tool=name, args=args, ok=result["ok"],
-                  duration_ms=elapsed_ms(start), result=result)
+        response = client.chat.completions.create(
+            model=config.model,
+            messages=messages,
+            tools=TOOL_DESCRIPTIONS,
+        )
+        model_ms = elapsed_ms(start)
+        reply = response.choices[0].message
 
-        messages.append({
-            "role": "tool",
-            "tool_call_id": call.id,
-            "content": json.dumps(result, ensure_ascii=False),
-        })
+        if not reply.tool_calls:
+            # No tool request: this is the final answer, the run ends here
+            text = reply.content or ""
+            log.write("final", duration_ms=model_ms, step=step, answer=text)
+            return text
 
-    # 2nd model call: the model reads the tool results and writes the answer
-    start = time.perf_counter()
-    response = client.chat.completions.create(
-        model=config.model,
-        messages=messages,
-    )
-    text = response.choices[0].message.content or ""
-    log.write("final", duration_ms=elapsed_ms(start), answer=text)
-    return text
+        # Keep the model's tool request in the conversation, then add one result per call
+        messages.append(reply)
+        for call in reply.tool_calls:
+            name = call.function.name
+            try:
+                args = json.loads(call.function.arguments)
+            except json.JSONDecodeError:
+                args = {}
+            log.write("tool_call", tool=name, args=args, duration_ms=model_ms, step=step)
+
+            start = time.perf_counter()
+            result = run_tool(name, args, config)
+            log.write("tool_result", tool=name, args=args, ok=result["ok"],
+                      duration_ms=elapsed_ms(start), step=step, result=result)
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+
+    # Temporary: step 4 turns this into a proper end with a report and a log entry
+    raise RuntimeError(f"Step limit of {config.max_steps} reached without a final answer.")
