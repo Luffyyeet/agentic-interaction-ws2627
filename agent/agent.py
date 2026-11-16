@@ -1,7 +1,7 @@
 import json
 import time
 
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
 from agent.config import Config
 from agent.runlog import RunLog
@@ -14,8 +14,29 @@ SYSTEM_PROMPT = (
 )
 
 
+class AgentStopped(Exception):
+    """The run ended without a final answer: step limit reached or the model not usable."""
+
+    def __init__(self, reason: str, message: str, step: int, report: str) -> None:
+        super().__init__(message)
+        self.reason = reason  # short code for the log, e.g. "step_limit"
+        self.step = step      # the step in which the run stopped
+        self.report = report  # what was done before the stop, for the user
+
+
 def elapsed_ms(start: float) -> int:
     return round((time.perf_counter() - start) * 1000)
+
+
+def make_report(done: list) -> str:
+    """List the tool calls of the run. Written by the code, so it works even when the model does not."""
+    if not done:
+        return "No tool was called before the stop."
+    lines = ["Tool calls before the stop:"]
+    for name, args, result in done:
+        status = "ok" if result["ok"] else f"failed ({result['error']})"
+        lines.append(f"  {name}({json.dumps(args, ensure_ascii=False)}): {status}")
+    return "\n".join(lines)
 
 
 def calendar(args: dict, config: Config) -> dict:
@@ -39,23 +60,30 @@ def run_tool(name: str, args: dict, config: Config) -> dict:
 
 
 def answer(question: str, config: Config, log: RunLog) -> str:
-    client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    # max_retries: on a rate limit (HTTP 429) the library waits as long as the server asks and tries again
+    client = OpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=5)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
     log.write("user_task", task=question)
+    done = []  # (tool, args, result) of every tool call, for the report if the run stops
 
     # Every step is one model call. The model always gets the tools and decides itself
     # whether it needs another one or is done.
     for step in range(1, config.max_steps + 1):
         start = time.perf_counter()
-        response = client.chat.completions.create(
-            model=config.model,
-            messages=messages,
-            tools=TOOL_DESCRIPTIONS,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=config.model,
+                messages=messages,
+                tools=TOOL_DESCRIPTIONS,
+            )
+        except OpenAIError as error:
+            # Still failing after the retries: without the model the run cannot go on
+            raise AgentStopped("model_error", f"Model request failed in step {step}: {error}",
+                               step, make_report(done)) from error
         model_ms = elapsed_ms(start)
         reply = response.choices[0].message
 
@@ -79,6 +107,7 @@ def answer(question: str, config: Config, log: RunLog) -> str:
             result = run_tool(name, args, config)
             log.write("tool_result", tool=name, args=args, ok=result["ok"],
                       duration_ms=elapsed_ms(start), step=step, result=result)
+            done.append((name, args, result))
 
             messages.append({
                 "role": "tool",
@@ -86,5 +115,6 @@ def answer(question: str, config: Config, log: RunLog) -> str:
                 "content": json.dumps(result, ensure_ascii=False),
             })
 
-    # Temporary: step 4 turns this into a proper end with a report and a log entry
-    raise RuntimeError(f"Step limit of {config.max_steps} reached without a final answer.")
+    # The loop ran out without a final answer: this is an error, not a success
+    raise AgentStopped("step_limit", f"Step limit of {config.max_steps} reached without a final answer.",
+                       config.max_steps, make_report(done))

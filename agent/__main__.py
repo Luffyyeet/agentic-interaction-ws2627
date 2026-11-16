@@ -1,8 +1,6 @@
 import sys
 
-from openai import OpenAIError
-
-from agent.agent import answer
+from agent.agent import AgentStopped, answer
 from agent.config import load_config
 from agent.runlog import RunLog
 
@@ -30,9 +28,21 @@ def main() -> int:
     question = sys.argv[1]
     try:
         print(answer(question, config, log))
-    except OpenAIError as error:
-        print(f"Model request failed: {error}", file=sys.stderr)
-        log.write("error", ok=False, error=f"Model request failed: {error}")
+    except AgentStopped as stop:
+        # Ended without an answer: say why and what was done, then exit as an error
+        print(stop, file=sys.stderr)
+        print(stop.report, file=sys.stderr)
+        log.write("error", ok=False, error=str(stop), reason=stop.reason, step=stop.step)
+        return 1
+    except KeyboardInterrupt:
+        # The person stopped the run with Ctrl+C
+        print("Stopped by the user.", file=sys.stderr)
+        log.write("error", ok=False, error="Stopped by the user.", reason="interrupted")
+        return 1
+    except Exception as error:
+        # Last safety net: whatever else goes wrong, the run still ends visibly in the log
+        print(f"Unexpected error: {error}", file=sys.stderr)
+        log.write("error", ok=False, error=f"Unexpected error: {error!r}", reason="unexpected")
         return 1
     return 0
 
