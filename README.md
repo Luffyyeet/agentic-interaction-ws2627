@@ -30,7 +30,7 @@ DATA_BASE_URL=https://jhbelz.github.io/agentic-interaction-data/v1
 
 Environment variables override the values in `.env`.
 
-Optional: `MAX_STEPS` sets the maximum number of model calls per run (default `10`).
+Optional: `MAX_STEPS` sets the maximum number of model calls per run (default `30`).
 
 ## Run
 

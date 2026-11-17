@@ -10,7 +10,7 @@ ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 REQUIRED_VARS = ["OPENAI_BASE_URL", "MODEL", "OPENAI_API_KEY", "DATA_BASE_URL"]
 
 # Optional: at most this many model calls per run, so that no run can go on forever
-DEFAULT_MAX_STEPS = 10
+DEFAULT_MAX_STEPS = 30
 
 
 @dataclass

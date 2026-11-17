@@ -28,9 +28,14 @@ def get_calendar_day(data_base_url: str, date: str) -> dict:
     # The service is outside our control: a broken answer becomes a result, not a crash
     try:
         day = response.json()
-        return {"ok": True, "date": day["date"], "events": day["events"]}
+        result = {"ok": True, "date": day["date"], "events": day["events"]}
     except (ValueError, KeyError, TypeError):
         return {"ok": False, "error": "Calendar service sent data in an unexpected format."}
+
+    # An empty list is a free day, not missing data: say so, so the model does not mix up the two
+    if not result["events"]:
+        result["note"] = "Calendar data exists for this date and it has no appointments: the day is free."
+    return result
 
 
 # Description of the tool in the format the Chat Completions API expects.
