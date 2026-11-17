@@ -1,7 +1,7 @@
 import json
 import time
 
-from openai import OpenAI, OpenAIError
+from openai import BadRequestError, OpenAI, OpenAIError
 
 from agent.config import Config
 from agent.runlog import RunLog
@@ -79,8 +79,9 @@ def run_tool(name: str, args: dict, config: Config) -> dict:
 
 
 def answer(question: str, config: Config, log: RunLog) -> str:
-    # max_retries: on a rate limit (HTTP 429) the library waits as long as the server asks and tries again
-    client = OpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=5)
+    # max_retries: on a rate limit (HTTP 429) the library waits as long as the server asks and tries again.
+    # timeout: give up on a single request after 120 s instead of the library's default of 10 minutes.
+    client = OpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=5, timeout=120)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -100,6 +101,13 @@ def answer(question: str, config: Config, log: RunLog) -> str:
                 tools=TOOL_DESCRIPTIONS,
             )
         except OpenAIError as error:
+            if isinstance(error, BadRequestError) and error.code == "tool_use_failed":
+                # The model wrote a broken tool call (e.g. a wrong tool name) and the server
+                # rejected the reply. Only this step failed: log it, then the model tries again.
+                problem = f"Model produced an invalid tool call: {error.message}"
+                log.write("tool_call", ok=False, duration_ms=elapsed_ms(start), step=step, error=problem)
+                done.append(("invalid tool call", {}, {"ok": False, "error": problem}))
+                continue
             # Still failing after the retries: without the model the run cannot go on
             raise AgentStopped("model_error", f"Model request failed in step {step}: {error}",
                                step, make_report(done)) from error
@@ -109,6 +117,13 @@ def answer(question: str, config: Config, log: RunLog) -> str:
         if not reply.tool_calls:
             # No tool request: this is the final answer, the run ends here
             text = reply.content or ""
+            if not text.strip():
+                # No tool call and no text is not an answer: end as an error, not as a success.
+                # finish_reason tells why, e.g. "stop" (wrote nothing) or "length" (cut off).
+                finish_reason = response.choices[0].finish_reason
+                raise AgentStopped("empty_answer",
+                                   f"The model gave an empty answer in step {step} (finish_reason: {finish_reason}).",
+                                   step, make_report(done))
             log.write("final", duration_ms=model_ms, step=step, answer=text)
             return text
 
