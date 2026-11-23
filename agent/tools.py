@@ -125,6 +125,45 @@ def get_weather(data_base_url: str, city: str, date: str) -> dict:
         return unexpected_format("Weather service")
 
 
+def get_train_connections(data_base_url: str, from_city: str, to_city: str, date: str) -> dict:
+    """Fetch the train connections between two cities on one day. Never raises: problems come back as a result."""
+    start = clean_city(from_city)
+    if start is None:
+        return invalid_city(from_city)
+    end = clean_city(to_city)
+    if end is None:
+        return invalid_city(to_city)
+    day = clean_date(date)
+    if day is None:
+        return invalid_date(date)
+
+    reply = fetch_json(f"{data_base_url}/transit/{start}/{end}/{day}.json", "Train service")
+    if not reply["ok"]:
+        return reply
+    data = reply["data"]
+
+    if data is None:
+        return {"ok": True, "from": from_city, "to": to_city, "date": day, "data_available": False,
+                "note": "No train data exists for this route and date. The connections are unknown: "
+                        "this does NOT mean that no train runs. Do not use another day or route instead."}
+
+    try:
+        result = {
+            "ok": True,
+            "from": data["from"],
+            "to": data["to"],
+            "date": data["date"],
+            "connections": data["connections"],
+        }
+    except (KeyError, TypeError):
+        return unexpected_format("Train service")
+
+    # Same idea as a free day in the calendar: an empty list is an answer, not missing data
+    if not result["connections"]:
+        result["note"] = "Train data exists for this route and date, but it lists no connections."
+    return result
+
+
 # Descriptions of the tools in the format the Chat Completions API expects.
 # This is all the model knows about a tool, so it decides from this text when and how to call it.
 CALENDAR_TOOL = {
@@ -172,6 +211,38 @@ WEATHER_TOOL = {
                 },
             },
             "required": ["city", "date"],
+        },
+    },
+}
+
+TRAIN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_train_connections",
+        "description": (
+            "Returns all train connections from one city to another on one day, with departure and arrival time, "
+            "number of changes (changes), train and price in euros (price_eur). "
+            "It covers one direction only: call it again with the cities swapped for the way back. "
+            "Use it whenever the user asks how to get to a city, when a train leaves or what it costs. "
+            "It only looks connections up, it does not book anything."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_city": {
+                    "type": "string",
+                    "description": "Name of the city where the trip starts, without station or country, e.g. Ulm.",
+                },
+                "to_city": {
+                    "type": "string",
+                    "description": "Name of the city where the trip ends, without station or country, e.g. München.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "The day of the trip, in the format YYYY-MM-DD, e.g. 2026-10-29.",
+                },
+            },
+            "required": ["from_city", "to_city", "date"],
         },
     },
 }
