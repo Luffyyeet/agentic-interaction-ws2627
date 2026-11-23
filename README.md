@@ -1,7 +1,7 @@
 # agentic-interaction-ws2627
 
 Course project for **Agentic Human-AI Interaction** (Ulm University, winter term 2026/27):
-a day and travel planner agent that works with simulated tools (calendar, timetable, weather, notes).
+a day and travel planner agent that works with simulated tools. It can look up the calendar, the weather and train connections.
 
 ## Requirements
 
@@ -39,15 +39,32 @@ From the repository root:
 ```bash
 python -m agent "Was steht am 29.10.2026 im Kalender?"
 python -m agent "What is on 29 Oct 2026 and on 30 Oct 2026?"
+python -m agent "How do I get to Munich on 29 Oct 2026, and do I need an umbrella?"
 ```
 
 The answer is printed to standard output, and the exit code is 0. Errors go to standard error with exit code 1.
 
 ## Tools
 
-| Tool | Parameters | What it does |
+| Tool | Parameters | Reads |
 |---|---|---|
-| `get_calendar_day` | `date` (`YYYY-MM-DD`) | Reads the appointments of one day from `{DATA_BASE_URL}/calendar/{date}.json`. HTTP 404 means that no data exists for that day; it is returned as "no data available", not as an error and not as a free day. |
+| `get_calendar_day` | `date` | Appointments of one day: `{DATA_BASE_URL}/calendar/{date}.json` |
+| `get_weather` | `city`, `date` | Forecast for one city and day: `{DATA_BASE_URL}/weather/{city}/{date}.json` |
+| `get_train_connections` | `from_city`, `to_city`, `date` | Trains of one day, one direction: `{DATA_BASE_URL}/transit/{from}/{to}/{date}.json` |
+
+All tools only read. The agent cannot book or change anything.
+
+- **Dates** have the format `YYYY-MM-DD`. Missing zeros are added (`2026-11-2` becomes `2026-11-02`), other formats are rejected.
+- **Cities** can be written as names. They are turned into the short form of the data service (`München`, `Muenchen` and `Munich` become `muenchen`). Anything but letters, spaces and hyphens is rejected.
+- **No data:** HTTP 404 means that no data exists. It is returned as "no data available", not as an error. It does not mean that the day is free, that it stays dry or that no train runs, and no other day, city or route is used instead.
+
+### Questions without a place
+
+At the start of a run, the agent reads the user's home city (`home`) from `{DATA_BASE_URL}/context.json`.
+
+1. A place named in the question always comes first.
+2. If a trip has no starting point, it starts at home. The weather of a trip means the weather at the destination. A weather question without any place means home.
+3. If the home city is unknown (`context.json` not reachable, or without a usable `home`), the agent does not guess and asks for the place in its answer. The run ends there; ask again with the place in the question.
 
 ## Agent loop
 
@@ -72,8 +89,8 @@ When a run stops without an answer, standard error also lists the tool calls mad
 
 Errors in a single step do not end the run. They are passed to the model as a tool result with `ok: false`, and the model can react to them in the next step:
 
-- an invalid date, broken or wrong arguments, an unknown tool,
-- the calendar service not reachable or answering with unexpected data,
+- an invalid date or city, broken or wrong arguments, an unknown tool,
+- the data service not reachable or answering with unexpected data,
 - a tool call that the model wrote in an invalid form and that the server rejected (HTTP 400 `tool_use_failed`); this step is logged as a failed `tool_call`, and the next step tries again.
 
 On a rate limit (HTTP 429) the agent waits as long as the server asks and tries again.
@@ -93,6 +110,7 @@ Each run writes its own file `logs/<start time>_<run id>.jsonl` (not committed),
 | `duration_ms` | Duration of the step |
 
 Some events add a field with their content: `task`, `result`, `answer` or `error`.
+`user_task` also has `home`, the home city used in this run (`null` if unknown).
 `tool_call`, `tool_result`, `final`, and `error` with reason `step_limit`, `empty_answer` or `model_error` also have `step`, the number of the model call they belong to.
 `error` events have `reason` (see the table above). A `tool_call` with arguments that are not valid JSON also has `raw_args`, the text the model sent.
 
@@ -102,7 +120,7 @@ Some events add a field with their content: `task`, `result`, `answer` or `error
 agent/
   __main__.py   entry point: reads the question, prints the answer, decides the exit code
   agent.py      agent loop: model → tools → model … until an answer or the step limit
-  tools.py      calendar tool and its description for the model
+  tools.py      calendar, weather and train tools with their descriptions for the model, home city
   config.py     loads .env, environment variables take precedence, MAX_STEPS
   runlog.py     JSONL run log
 ```
