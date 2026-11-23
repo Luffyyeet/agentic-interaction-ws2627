@@ -5,14 +5,26 @@ from openai import BadRequestError, OpenAI, OpenAIError
 
 from agent.config import Config
 from agent.runlog import RunLog
-from agent.tools import CALENDAR_TOOL, get_calendar_day
+from agent.tools import (
+    CALENDAR_TOOL,
+    TRAIN_TOOL,
+    WEATHER_TOOL,
+    get_calendar_day,
+    get_train_connections,
+    get_weather,
+)
 
 SYSTEM_PROMPT = (
-    "You are a calendar assistant. To answer questions about appointments, "
-    "always look them up with the get_calendar_day tool, never guess. "
-    "Call the tool once for every day the question needs. "
-    "If a lookup fails, say for which day the answer is missing and why. "
-    "If there is no data for a day, say that no data is available, not that the day is free. "
+    "You are a day and travel planner. You can look up appointments, the weather and train connections. "
+    "Always look these things up with the tools, never guess and never use your own knowledge for them. "
+    "Call a tool once for every day, city and direction the question needs. "
+    "If a question has several parts, answer every part. "
+    "If a lookup fails, say for which part the answer is missing and why. "
+    "If no data is available, say exactly that for this part. It does not mean that the day is free, "
+    "that it stays dry or that no train runs. Never fill the gap with values from another day, city or route. "
+    "For trains, name the train with its departure and arrival time. "
+    "For weather, name the condition and the rain probability. "
+    "You can only look things up, you cannot book or change anything. "
     "When you have everything, answer without calling a tool. "
     "Answer briefly, in the language of the user's question."
 )
@@ -47,10 +59,21 @@ def calendar(args: dict, config: Config) -> dict:
     return get_calendar_day(config.data_base_url, args.get("date", ""))
 
 
+def weather(args: dict, config: Config) -> dict:
+    return get_weather(config.data_base_url, args.get("city", ""), args.get("date", ""))
+
+
+def trains(args: dict, config: Config) -> dict:
+    return get_train_connections(config.data_base_url, args.get("from_city", ""),
+                                 args.get("to_city", ""), args.get("date", ""))
+
+
 # All tools the agent offers: name -> (description for the model, function that runs it).
 # A new tool needs only one more entry here.
 TOOLS = {
     "get_calendar_day": (CALENDAR_TOOL, calendar),
+    "get_weather": (WEATHER_TOOL, weather),
+    "get_train_connections": (TRAIN_TOOL, trains),
 }
 TOOL_DESCRIPTIONS = [description for description, _ in TOOLS.values()]
 
