@@ -1,36 +1,90 @@
+import re
 from datetime import datetime
 
 import httpx
 
+# The data service knows cities only by their short form, e.g. "muenchen"
+UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+ENGLISH_NAMES = {"munich": "muenchen"}
 
-def get_calendar_day(data_base_url: str, date: str) -> dict:
-    """Fetch the appointments of one day. Never raises: problems come back as a result."""
-    # The model chooses the date, so check it before building a URL from it
+
+def clean_date(date: str) -> str | None:
+    """Return the date as YYYY-MM-DD, or None if it is not a valid date."""
+    # The model chooses the date, so check it before building a URL from it.
+    # isoformat also adds missing zeros: "2026-11-2" would otherwise give a wrong 404.
     try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        return {"ok": False, "error": f"Invalid date '{date}'. Use the format YYYY-MM-DD."}
+        return datetime.strptime(date, "%Y-%m-%d").date().isoformat()
+    except (ValueError, TypeError):
+        return None
 
-    url = f"{data_base_url}/calendar/{date}.json"
+
+def clean_city(city: str) -> str | None:
+    """Turn a city name into the short form used in the URLs ("München" -> "muenchen"), or None if invalid."""
+    if not isinstance(city, str):
+        return None
+    name = city.strip().lower().translate(UMLAUTS).replace(" ", "-")
+    # Only letters and hyphens may go into the URL, no "/" or ".."
+    if not re.fullmatch(r"[a-z-]+", name):
+        return None
+    return ENGLISH_NAMES.get(name, name)
+
+
+def invalid_date(date: str) -> dict:
+    return {"ok": False, "error": f"Invalid date '{date}'. Use the format YYYY-MM-DD."}
+
+
+def invalid_city(city: str) -> dict:
+    return {"ok": False, "error": f"Invalid city '{city}'. Use only the name of the city, e.g. Ulm."}
+
+
+def fetch_json(url: str, service: str) -> dict:
+    """GET one file of the data service. Never raises: problems come back as a result.
+
+    Three outcomes: {"ok": False, "error": ...}, {"ok": True, "data": None} for a 404 (no data exists),
+    or {"ok": True, "data": ...} with the content of the file.
+    """
     try:
         response = httpx.get(url, timeout=10)
     except httpx.HTTPError as error:
-        return {"ok": False, "error": f"Calendar service not reachable: {error}"}
+        return {"ok": False, "error": f"{service} not reachable: {error}"}
 
-    # 404 is not a failure: it means there is no calendar data for that day.
-    # No empty "events" list here, since the model would read that as "the day is free".
+    # 404 is not a failure: it means there is no data
     if response.status_code == 404:
-        return {"ok": True, "date": date, "data_available": False,
-                "note": "No calendar data exists for this date. This does NOT mean the day is free."}
+        return {"ok": True, "data": None}
     if response.status_code != 200:
-        return {"ok": False, "error": f"Calendar service answered with HTTP {response.status_code}."}
+        return {"ok": False, "error": f"{service} answered with HTTP {response.status_code}."}
+
+    try:
+        return {"ok": True, "data": response.json()}
+    except ValueError:
+        return unexpected_format(service)
+
+
+def unexpected_format(service: str) -> dict:
+    return {"ok": False, "error": f"{service} sent data in an unexpected format."}
+
+
+def get_calendar_day(data_base_url: str, date: str) -> dict:
+    """Fetch the appointments of one day. Never raises: problems come back as a result."""
+    day = clean_date(date)
+    if day is None:
+        return invalid_date(date)
+
+    reply = fetch_json(f"{data_base_url}/calendar/{day}.json", "Calendar service")
+    if not reply["ok"]:
+        return reply
+    data = reply["data"]
+
+    # No empty "events" list here, since the model would read that as "the day is free".
+    if data is None:
+        return {"ok": True, "date": day, "data_available": False,
+                "note": "No calendar data exists for this date. This does NOT mean the day is free."}
 
     # The service is outside our control: a broken answer becomes a result, not a crash
     try:
-        day = response.json()
-        result = {"ok": True, "date": day["date"], "events": day["events"]}
-    except (ValueError, KeyError, TypeError):
-        return {"ok": False, "error": "Calendar service sent data in an unexpected format."}
+        result = {"ok": True, "date": data["date"], "events": data["events"]}
+    except (KeyError, TypeError):
+        return unexpected_format("Calendar service")
 
     # An empty list is a free day, not missing data: say so, so the model does not mix up the two
     if not result["events"]:
@@ -38,8 +92,41 @@ def get_calendar_day(data_base_url: str, date: str) -> dict:
     return result
 
 
-# Description of the tool in the format the Chat Completions API expects.
-# This is all the model knows about the tool, so it decides from this text when and how to call it.
+def get_weather(data_base_url: str, city: str, date: str) -> dict:
+    """Fetch the weather forecast for one city and day. Never raises: problems come back as a result."""
+    place = clean_city(city)
+    if place is None:
+        return invalid_city(city)
+    day = clean_date(date)
+    if day is None:
+        return invalid_date(date)
+
+    reply = fetch_json(f"{data_base_url}/weather/{place}/{day}.json", "Weather service")
+    if not reply["ok"]:
+        return reply
+    data = reply["data"]
+
+    if data is None:
+        return {"ok": True, "city": city, "date": day, "data_available": False,
+                "note": "No weather data exists for this city and date. The weather is unknown: "
+                        "this does NOT mean that it stays dry. Do not use another day or city instead."}
+
+    try:
+        return {
+            "ok": True,
+            "city": data["city"],
+            "date": data["date"],
+            "condition": data["condition"],
+            "temp_c": data["temp_c"],
+            "rain_probability": data["rain_probability"],
+            "wind_kmh": data["wind_kmh"],
+        }
+    except (KeyError, TypeError):
+        return unexpected_format("Weather service")
+
+
+# Descriptions of the tools in the format the Chat Completions API expects.
+# This is all the model knows about a tool, so it decides from this text when and how to call it.
 CALENDAR_TOOL = {
     "type": "function",
     "function": {
@@ -58,6 +145,33 @@ CALENDAR_TOOL = {
                 },
             },
             "required": ["date"],
+        },
+    },
+}
+
+WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": (
+            "Returns the weather forecast for one city on one day: condition, temperature in °C (temp_c), "
+            "rain probability from 0 to 1 (rain_probability, 0.6 means 60 %) and wind in km/h (wind_kmh). "
+            "It covers the whole day, there are no values for single hours. "
+            "Use it whenever the user asks about the weather, rain, an umbrella or what to wear."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "Name of the city only, without station or country, e.g. Ulm or München.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "The day of the forecast, in the format YYYY-MM-DD, e.g. 2026-10-29.",
+                },
+            },
+            "required": ["city", "date"],
         },
     },
 }
