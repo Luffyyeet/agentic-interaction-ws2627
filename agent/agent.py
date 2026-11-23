@@ -10,6 +10,7 @@ from agent.tools import (
     TRAIN_TOOL,
     WEATHER_TOOL,
     get_calendar_day,
+    get_home,
     get_train_connections,
     get_weather,
 )
@@ -18,15 +19,34 @@ SYSTEM_PROMPT = (
     "You are a day and travel planner. You can look up appointments, the weather and train connections. "
     "Always look these things up with the tools, never guess and never use your own knowledge for them. "
     "Call a tool once for every day, city and direction the question needs. "
+    "Do all lookups first, also when you have to ask the user something. "
+    "Every time, price and weather value in your answer must be copied exactly from a tool result. "
     "If a question has several parts, answer every part. "
     "If a lookup fails, say for which part the answer is missing and why. "
     "If no data is available, say exactly that for this part. It does not mean that the day is free, "
     "that it stays dry or that no train runs. Never fill the gap with values from another day, city or route. "
     "For trains, name the train with its departure and arrival time. "
     "For weather, name the condition and the rain probability. "
+    "If the question is about a trip, its weather part means the destination. "
     "You can only look things up, you cannot book or change anything. "
     "When you have everything, answer without calling a tool. "
-    "Answer briefly, in the language of the user's question."
+    "Answer briefly. "
+)
+
+HOME_KNOWN = (
+    "The user's home is {home}. A trip without a named starting point starts in {home}; say so in the answer. "
+    "A question about the weather that names no place at all means {home}. "
+    "A place named in the question always comes first. "
+)
+HOME_UNKNOWN = (
+    "The user's home is unknown, never guess it. If a trip has no named starting point, look up the weather "
+    "of the destination if the question asks for it, and ask the user for the starting point in your answer. "
+    "If a question about the weather names no place at all, ask the user for the place. "
+)
+# Last part of the prompt, because the tool results are in another language than some questions
+LANGUAGE_RULE = (
+    "Language: an English question gets an English answer, a German question gets a German answer, and so on. "
+    "Only the language of the question counts, not the language of the tool results: translate their values."
 )
 
 
@@ -38,6 +58,11 @@ class AgentStopped(Exception):
         self.reason = reason  # short code for the log, e.g. "step_limit"
         self.step = step      # the step in which the run stopped
         self.report = report  # what was done before the stop, for the user
+
+
+def make_system_prompt(home: str | None) -> str:
+    """The fixed prompt, the rule for questions that do not name a place, and the language rule."""
+    return SYSTEM_PROMPT + (HOME_KNOWN.format(home=home) if home else HOME_UNKNOWN) + LANGUAGE_RULE
 
 
 def elapsed_ms(start: float) -> int:
@@ -106,11 +131,12 @@ def answer(question: str, config: Config, log: RunLog) -> str:
     # timeout: give up on a single request after 120 s instead of the library's default of 10 minutes.
     client = OpenAI(base_url=config.base_url, api_key=config.api_key, max_retries=5, timeout=120)
 
+    home = get_home(config.data_base_url)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": make_system_prompt(home)},
         {"role": "user", "content": question},
     ]
-    log.write("user_task", task=question)
+    log.write("user_task", task=question, home=home)
     done = []  # (tool, args, result) of every tool call, for the report if the run stops
 
     # Every step is one model call. The model always gets the tools and decides itself

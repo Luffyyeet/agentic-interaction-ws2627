@@ -45,7 +45,7 @@ def fetch_json(url: str, service: str) -> dict:
     """
     try:
         response = httpx.get(url, timeout=10)
-    except httpx.HTTPError as error:
+    except (httpx.HTTPError, httpx.InvalidURL) as error:
         return {"ok": False, "error": f"{service} not reachable: {error}"}
 
     # 404 is not a failure: it means there is no data
@@ -62,6 +62,17 @@ def fetch_json(url: str, service: str) -> dict:
 
 def unexpected_format(service: str) -> dict:
     return {"ok": False, "error": f"{service} sent data in an unexpected format."}
+
+
+def get_home(data_base_url: str) -> str | None:
+    """Read the user's home city from context.json, or None if it is unknown. Never raises."""
+    reply = fetch_json(f"{data_base_url}/context.json", "Context service")
+    context = reply.get("data")
+    if not isinstance(context, dict):
+        return None
+    home = context.get("home")
+    # The city goes into the system prompt, so accept only a plain city name
+    return home if clean_city(home) else None
 
 
 def get_calendar_day(data_base_url: str, date: str) -> dict:
